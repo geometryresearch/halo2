@@ -1390,7 +1390,7 @@ pub struct ConstraintSystem<F: Field> {
     pub(crate) permutation: permutation::Argument,
 
     /// Map from table expression to vec of vec of input expressions
-    pub lookups_map: HashMap<String, LookupTracker<F>>,
+    pub lookups_map: BTreeMap<String, LookupTracker<F>>,
 
     // Vector of lookup arguments, where each corresponds to a sequence of
     // input expressions and a sequence of table expressions involved in the lookup.
@@ -1482,7 +1482,7 @@ impl<F: Field> Default for ConstraintSystem<F> {
             num_advice_queries: Vec::new(),
             instance_queries: Vec::new(),
             permutation: permutation::Argument::new(),
-            lookups_map: HashMap::default(),
+            lookups_map: BTreeMap::default(),
             lookups: Vec::new(),
             hybrid_lookups: Vec::new(),
             general_column_annotations: HashMap::new(),
@@ -1575,15 +1575,19 @@ impl<F: Field> ConstraintSystem<F> {
             });
     }
 
-    fn unfold_lookups(&self) -> Vec<mv_lookup::HybridArgument<F>> {
-        self.lookups_map
+    /// TODO: Chunk into smaller pieces based on max degree bound
+    pub fn chunk_lookups(mut self) -> Self {
+        self.hybrid_lookups = self
+            .lookups_map
             .iter()
             .map(|(_, v)| {
                 let LookupTracker { table, inputs } = v;
                 // FIXME do not allow large degree inputs
                 mv_lookup::HybridArgument::new(table, inputs)
             })
-            .collect()
+            .collect();
+
+        self
     }
 
     /// Add a lookup argument for some input expressions and table expressions.
@@ -1863,6 +1867,18 @@ impl<F: Field> ConstraintSystem<F> {
             replace_selectors(expr, &selector_replacements, true);
         }
 
+        // Substitute non-simple selectors for the real fixed columns in all
+        // hybrid lookup expressions
+        for expr in self.hybrid_lookups.iter_mut().flat_map(|lookup| {
+            lookup
+                .inputs_expressions
+                .iter_mut()
+                .flatten()
+                .chain(lookup.table_expressions.iter_mut())
+        }) {
+            replace_selectors(expr, &selector_replacements, true);
+        }
+
         (self, polys)
     }
 
@@ -2033,6 +2049,16 @@ impl<F: Field> ConstraintSystem<F> {
                 .flat_map(|gate| gate.polynomials().iter().map(|poly| poly.degree()))
                 .max()
                 .unwrap_or(0),
+        );
+
+        //
+        degree = std::cmp::max(
+            degree,
+            self.hybrid_lookups
+                .iter()
+                .map(|hl| hl.required_degree())
+                .max()
+                .unwrap_or(1),
         );
 
         std::cmp::max(degree, self.minimum_degree.unwrap_or(1))
