@@ -37,6 +37,7 @@ where
 {
     let mut cs = ConstraintSystem::default();
     let config = ConcreteCircuit::configure(&mut cs);
+    let cs = cs.chunk_lookups();
 
     let degree = cs.degree();
 
@@ -233,7 +234,6 @@ where
     )?;
 
     let mut fixed = batch_invert_assigned(assembly.fixed);
-    let cs = cs.chunk_lookups();
     let (cs, selector_polys) = cs.compress_selectors(assembly.selectors.clone());
     fixed.extend(
         selector_polys
@@ -297,7 +297,6 @@ where
     )?;
 
     let mut fixed = batch_invert_assigned(assembly.fixed);
-    let cs = cs.chunk_lookups();
     let (cs, selector_polys) = cs.compress_selectors(assembly.selectors);
     fixed.extend(
         selector_polys
