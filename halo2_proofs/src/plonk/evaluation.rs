@@ -459,6 +459,8 @@ impl<C: CurveAffine> Evaluator<C> {
                 });
             }
 
+            use std::time::{Duration, Instant};
+            let start = Instant::now();
             // Lookups
             for (n, lookup) in lookups.iter().enumerate() {
                 // Polynomials required for this lookup.
@@ -564,6 +566,10 @@ impl<C: CurveAffine> Evaluator<C> {
                     }
                 });
             }
+            println!(
+                "lookup in evaluate_h: at least {}ms",
+                Instant::now().duration_since(start).as_micros() as f64 / 1_000f64
+            );
         }
         values
     }
