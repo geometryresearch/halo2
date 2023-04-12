@@ -2,6 +2,7 @@
 #![allow(clippy::op_ref)]
 
 use assert_matches::assert_matches;
+use ff::PrimeField;
 use halo2_proofs::arithmetic::{Field, FieldExt};
 use halo2_proofs::circuit::{Cell, Layouter, SimpleFloorPlanner, Value};
 use halo2_proofs::dev::MockProver;
@@ -491,7 +492,10 @@ fn plonk_api() {
         rng: R,
         params: &'params Scheme::ParamsProver,
         pk: &ProvingKey<Scheme::Curve>,
-    ) -> Vec<u8> {
+    ) -> Vec<u8>
+    where
+        Scheme::Scalar: PrimeField,
+    {
         let (a, instance, lookup_table) = common!(Scheme);
 
         let circuit: MyCircuit<Scheme::Scalar> = MyCircuit {

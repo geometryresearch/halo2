@@ -67,7 +67,8 @@ impl Basis for ExtendedLagrangeCoeff {}
 /// basis.
 #[derive(Clone, Debug)]
 pub struct Polynomial<F, B> {
-    values: Vec<F>,
+    /// FIXME UNDO THIS
+    pub values: Vec<F>,
     _marker: PhantomData<B>,
 }
 
