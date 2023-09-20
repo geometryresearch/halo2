@@ -67,7 +67,8 @@ impl Basis for ExtendedLagrangeCoeff {}
 /// basis.
 #[derive(Clone, Debug)]
 pub struct Polynomial<F, B> {
-    values: Vec<F>,
+    /// FIXME UNDO THIS
+    pub values: Vec<F>,
     _marker: PhantomData<B>,
 }
 
@@ -307,7 +308,7 @@ impl<'a, F: Field, B: Basis> Sub<F> for &'a Polynomial<F, B> {
 /// Describes the relative rotation of a vector. Negative numbers represent
 /// reverse (leftmost) rotations and positive numbers represent forward (rightmost)
 /// rotations. Zero represents no rotation.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Rotation(pub i32);
 
 impl Rotation {

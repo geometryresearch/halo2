@@ -297,26 +297,22 @@ pub fn verify_proof<
                         gamma,
                         x,
                     ))
-                    .chain(
-                        lookups
-                            .iter()
-                            .zip(vk.cs.lookups.iter())
-                            .flat_map(move |(p, argument)| {
-                                p.expressions(
-                                    l_0,
-                                    l_last,
-                                    l_blind,
-                                    argument,
-                                    theta,
-                                    beta,
-                                    advice_evals,
-                                    fixed_evals,
-                                    instance_evals,
-                                    challenges,
-                                )
-                            })
-                            .into_iter(),
-                    )
+                    .chain(lookups.iter().zip(vk.cs.lookups.iter()).flat_map(
+                        move |(p, argument)| {
+                            p.expressions(
+                                l_0,
+                                l_last,
+                                l_blind,
+                                argument,
+                                theta,
+                                beta,
+                                advice_evals,
+                                fixed_evals,
+                                instance_evals,
+                                challenges,
+                            )
+                        },
+                    ))
             });
 
         vanishing.verify(params, expressions, y, xn)
@@ -362,12 +358,7 @@ pub fn verify_proof<
                         },
                     ))
                     .chain(permutation.queries(vk, x))
-                    .chain(
-                        lookups
-                            .iter()
-                            .flat_map(move |p| p.queries(vk, x))
-                            .into_iter(),
-                    )
+                    .chain(lookups.iter().flat_map(move |p| p.queries(vk, x)))
             },
         )
         .chain(

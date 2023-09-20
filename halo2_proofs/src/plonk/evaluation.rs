@@ -187,7 +187,7 @@ pub struct Evaluator<C: CurveAffine> {
     ///  Custom gates evalution
     pub custom_gates: GraphEvaluator<C>,
     ///  Lookups evalution
-    pub lookups: Vec<(GraphEvaluator<C>, GraphEvaluator<C>)>,
+    pub lookups: Vec<(Vec<GraphEvaluator<C>>, GraphEvaluator<C>)>,
 }
 
 /// GraphEvaluator
@@ -244,7 +244,9 @@ impl<C: CurveAffine> Evaluator<C> {
         // Lookups
         for lookup in cs.lookups.iter() {
             let mut graph_table = GraphEvaluator::default();
-            let mut graph_input = GraphEvaluator::default();
+            let mut graph_inputs: Vec<_> = (0..lookup.inputs_expressions.len())
+                .map(|_| GraphEvaluator::default())
+                .collect();
 
             let evaluate_lc = |graph: &mut GraphEvaluator<C>, expressions: &Vec<Expression<_>>| {
                 let parts = expressions
@@ -258,15 +260,22 @@ impl<C: CurveAffine> Evaluator<C> {
                 ))
             };
 
-            // Input coset
-            let compressed_input_coset = evaluate_lc(&mut graph_input, &lookup.input_expressions);
+            // Inputs cosets
+            for (input_expressions, graph_input) in lookup
+                .inputs_expressions
+                .iter()
+                .zip(graph_inputs.iter_mut())
+            {
+                let compressed_input_coset = evaluate_lc(graph_input, input_expressions);
+
+                graph_input.add_calculation(Calculation::Add(
+                    compressed_input_coset,
+                    ValueSource::Beta(),
+                ));
+            }
+
             // table coset
             let compressed_table_coset = evaluate_lc(&mut graph_table, &lookup.table_expressions);
-
-            graph_input.add_calculation(Calculation::Add(
-                compressed_input_coset,
-                ValueSource::Beta(),
-            ));
 
             graph_table.add_calculation(Calculation::Add(
                 compressed_table_coset,
@@ -274,10 +283,10 @@ impl<C: CurveAffine> Evaluator<C> {
             ));
 
             /*
-                a) 1/(f + beta)
-                b) 1/(t + beta)
+                a) f_i + beta
+                b) t + beta
             */
-            ev.lookups.push((graph_input, graph_table));
+            ev.lookups.push((graph_inputs.to_vec(), graph_table));
         }
 
         ev
@@ -450,6 +459,63 @@ impl<C: CurveAffine> Evaluator<C> {
                 });
             }
 
+            // For lookups, compute inputs_inv_sum = ∑ 1 / (f_i(X) + α)
+            // The outer vector has capacity self.lookups.len()
+            // The middle vector has capacity domain.extended_len()
+            // The inner vector has capacity 
+            let inputs_inv_sum: Vec<Vec<Vec<_>>> = lookups
+                .iter()
+                .enumerate()
+                .map(|(n, _)| {
+                    let (inputs_lookup_evaluator, _) = &self.lookups[n];
+                    let mut inputs_eval_data: Vec<_> = inputs_lookup_evaluator
+                        .iter()
+                        .map(|input_lookup_evaluator| input_lookup_evaluator.instance())
+                        .collect();
+
+                    let mut inputs_values_for_extended_domain: Vec<C::Scalar> =
+                        Vec::with_capacity(self.lookups[n].0.len() * domain.extended_len());
+                    for idx in 0..domain.extended_len() {
+                        // For each compressed input column, evaluate at ω^i and add beta
+                        // This is a vector of length self.lookups[n].0.len()
+                        let inputs_values: Vec<C::ScalarExt> = inputs_lookup_evaluator
+                            .iter()
+                            .zip(inputs_eval_data.iter_mut())
+                            .map(|(input_lookup_evaluator, input_eval_data)| {
+                                input_lookup_evaluator.evaluate(
+                                    input_eval_data,
+                                    fixed,
+                                    advice,
+                                    instance,
+                                    challenges,
+                                    &beta,
+                                    &gamma,
+                                    &theta,
+                                    &y,
+                                    &C::ScalarExt::zero(),
+                                    idx,
+                                    rot_scale,
+                                    isize,
+                                )
+                            })
+                            .collect();
+
+                        inputs_values_for_extended_domain.extend_from_slice(&inputs_values);
+                    }
+
+                    inputs_values_for_extended_domain.batch_invert();
+
+                    // The outer vector has capacity domain.extended_len()
+                    // The inner vector has capacity self.lookups[n].0.len()
+                    let inputs_inv_sums: Vec<Vec<_>> = inputs_values_for_extended_domain
+                        .chunks_exact(self.lookups[n].0.len())
+                        .map(|c| c.to_vec())
+                        .collect();
+
+                    inputs_inv_sums
+                })
+                .collect();
+
             // Lookups
             for (n, lookup) in lookups.iter().enumerate() {
                 // Polynomials required for this lookup.
@@ -459,30 +525,59 @@ impl<C: CurveAffine> Evaluator<C> {
                 let m_coset = pk.vk.domain.coeff_to_extended(lookup.m_poly.clone());
 
                 // Lookup constraints
+                /*
+                    φ_i(X) = f_i(X) + α
+                    τ(X) = t(X) + α
+                    LHS = τ(X) * Π(φ_i(X)) * (ϕ(gX) - ϕ(X))
+                    RHS = τ(X) * Π(φ_i(X)) * (∑ 1/(φ_i(X)) - m(X) / τ(X))))
+                        = (τ(X) * Π(φ_i(X)) * ∑ 1/(φ_i(X))) - Π(φ_i(X)) * m(X)
+                        = Π(φ_i(X)) * (τ(X) * ∑ 1/(φ_i(X)) - m(X))
+                */
                 parallelize(&mut values, |values, start| {
-                    let (input_lookup_evaluator, table_lookup_evaluator) = &self.lookups[n];
-                    let mut input_eval_data = input_lookup_evaluator.instance();
+                    let (inputs_lookup_evaluator, table_lookup_evaluator) = &self.lookups[n];
+                    let mut inputs_eval_data: Vec<_> = inputs_lookup_evaluator
+                        .iter()
+                        .map(|input_lookup_evaluator| input_lookup_evaluator.instance())
+                        .collect();
+
                     let mut table_eval_data = table_lookup_evaluator.instance();
 
                     for (i, value) in values.iter_mut().enumerate() {
                         let idx = start + i;
 
-                        // f_i(X) + α
-                        let input_value = input_lookup_evaluator.evaluate(
-                            &mut input_eval_data,
-                            fixed,
-                            advice,
-                            instance,
-                            challenges,
-                            &beta,
-                            &gamma,
-                            &theta,
-                            &y,
-                            &C::ScalarExt::zero(),
-                            idx,
-                            rot_scale,
-                            isize,
-                        );
+                        // f_i(X) + α for i in expressions
+                        let inputs_value: Vec<C::ScalarExt> = inputs_lookup_evaluator
+                            .iter()
+                            .zip(inputs_eval_data.iter_mut())
+                            .map(|(input_lookup_evaluator, input_eval_data)| {
+                                input_lookup_evaluator.evaluate(
+                                    input_eval_data,
+                                    fixed,
+                                    advice,
+                                    instance,
+                                    challenges,
+                                    &beta,
+                                    &gamma,
+                                    &theta,
+                                    &y,
+                                    &C::ScalarExt::zero(),
+                                    idx,
+                                    rot_scale,
+                                    isize,
+                                )
+                            })
+                            .collect();
+
+                        // Π(φ_i(X))
+                        let inputs_prod: C::Scalar = inputs_value
+                            .iter()
+                            .fold(C::Scalar::one(), |acc, input| acc * input);
+
+                        // f_i(X) + α at ω^idx
+                        let fi_inverses = &inputs_inv_sum[n][idx];
+                        let inputs_inv_sum = fi_inverses
+                            .iter()
+                            .fold(C::Scalar::zero(), |acc, input| acc + input);
 
                         // t(X) + α
                         let table_value = table_lookup_evaluator.evaluate(
@@ -504,14 +599,15 @@ impl<C: CurveAffine> Evaluator<C> {
                         let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
 
                         let lhs = {
-                            // (t(X) + α) * (f_i(X) + α) * (ϕ(gX) - ϕ(X))
-                            table_value * input_value * (phi_coset[r_next] - phi_coset[idx])
+                            // τ(X) * Π(φ_i(X)) * (ϕ(gX) - ϕ(X))
+                            table_value * inputs_prod * (phi_coset[r_next] - phi_coset[idx])
                         };
 
                         let rhs = {
-                            //   (t(X) + α) * (f_i + α) * (1/(f_i(X) + α) - m(X) / (t(X) + α))
-                            // = (t(X) + α) - m(X) * (f_i + α)
-                            table_value - m_coset[idx] * input_value
+                            //   τ(X) * Π(φ_i(X)) * (∑ 1/(φ_i(X)) - m(X) / τ(X))))
+                            // = (τ(X) * Π(φ_i(X)) * ∑ 1/(φ_i(X))) - Π(φ_i(X)) * m(X)
+                            // = Π(φ_i(X)) * (τ(X) * ∑ 1/(φ_i(X)) - m(X))
+                            inputs_prod * (table_value * inputs_inv_sum - m_coset[idx])
                         };
 
                         // phi[0] = 0
@@ -520,7 +616,7 @@ impl<C: CurveAffine> Evaluator<C> {
                         // phi[u] = 0
                         *value = *value * y + l_last[idx] * phi_coset[idx];
 
-                        // q(X) = ((t(X) + α) * (f_i(X) + α) * (ϕ(gX) - ϕ(X)) - (t(X) + α) * (f_i + α) * (1/(f_i(X) + α) - m(X) / (t(X) + α))) mod zH(X)
+                        // q(X) = LHS - RHS mod zH(X)
                         *value = *value * y + (lhs - rhs) * l_active_row[idx];
                     }
                 });
