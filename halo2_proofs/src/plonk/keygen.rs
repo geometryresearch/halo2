@@ -274,7 +274,7 @@ where
     let mut cs = ConstraintSystem::default();
     let config = ConcreteCircuit::configure(&mut cs);
 
-    let cs = cs;
+    let cs = cs.chunk_lookups();
 
     if (params.n() as usize) < cs.minimum_rows() {
         return Err(Error::not_enough_rows_available(params.k()));
